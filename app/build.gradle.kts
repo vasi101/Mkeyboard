@@ -8,6 +8,19 @@ android {
     namespace = "com.mobilekeyb"
     compileSdk = 36
 
+    val releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+
+    signingConfigs {
+        if (releaseKeystorePath != null) {
+            create("release") {
+                storeFile = file(releaseKeystorePath)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
     defaultConfig {
         applicationId = "com.mobilekeyb"
         minSdk = 28
@@ -17,6 +30,13 @@ android {
     }
 
     buildFeatures { compose = true }
+    buildTypes {
+        getByName("release") {
+            if (releaseKeystorePath != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
