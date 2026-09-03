@@ -86,4 +86,5 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: gh release create "$GITHUB_REF_NAME" release/*.apk --generate-notes --title "Mobile Keyb $GITHUB_REF_NAME"
