@@ -4,6 +4,8 @@ import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.content.Intent
+import android.net.Uri
+import android.graphics.BitmapFactory
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -12,15 +14,17 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Mouse
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -29,6 +33,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.focus.FocusRequester
@@ -37,10 +45,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.zIndex
 import androidx.compose.foundation.text.BasicTextField
 import kotlin.math.roundToInt
 import com.mobilekeyb.bluetooth.*
@@ -50,7 +61,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme(colorScheme = lightColorScheme(primary = Color(0xFF4355B9))) { PermissionGate { hid -> manager = hid; MobileKeybApp(hid) } } }
+        setContent {
+            val prefs = remember { getSharedPreferences("appearance", MODE_PRIVATE) }
+            var darkTheme by remember { mutableStateOf(prefs.getBoolean("dark_theme", false)) }
+            var wallpaper by remember { mutableStateOf(prefs.getString("wallpaper", null)?.let(Uri::parse)) }
+            MaterialTheme(colorScheme = if (darkTheme) darkColorScheme(primary = Color(0xFFBBC3FF)) else lightColorScheme(primary = Color(0xFF4355B9))) {
+                PermissionGate { hid ->
+                    manager = hid
+                    MobileKeybApp(
+                        hid, darkTheme,
+                        { darkTheme = it; prefs.edit().putBoolean("dark_theme", it).apply() },
+                        wallpaper,
+                        { wallpaper = it; prefs.edit().putString("wallpaper", it?.toString()).apply() }
+                    )
+                }
+            }
+        }
     }
 
     override fun onDestroy() { manager?.close(); super.onDestroy() }
@@ -68,25 +94,36 @@ private fun PermissionGate(content: @Composable (BluetoothHidManager) -> Unit) {
     } else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Button(onClick = { if (Build.VERSION.SDK_INT >= 31) launcher.launch(Manifest.permission.BLUETOOTH_CONNECT) }) { Text("Allow Bluetooth access") } }
 }
 
-private enum class Page { Control, Settings }
-
 @Composable
-@OptIn(ExperimentalLayoutApi::class)
-private fun MobileKeybApp(hid: BluetoothHidManager) {
-    var page by remember { mutableStateOf(Page.Control) }
+private fun MobileKeybApp(hid: BluetoothHidManager, darkTheme: Boolean, onDarkTheme: (Boolean) -> Unit, wallpaperUri: Uri?, onWallpaper: (Uri?) -> Unit) {
+    val context = LocalContext.current
+    var settingsOpen by remember { mutableStateOf(false) }
     var sensitivity by remember { mutableFloatStateOf(1f) }
     var naturalScroll by remember { mutableStateOf(true) }
     val state by hid.state.collectAsState()
-    val keyboardVisible = WindowInsets.isImeVisible
     val enableBluetooth = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         hid.start()
     }
     val makeDiscoverable = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
+    val wallpaperPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let {
+            runCatching { context.contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            onWallpaper(it)
+        }
+    }
+    val wallpaperBitmap = remember(wallpaperUri) {
+        wallpaperUri?.let { uri -> runCatching { context.contentResolver.openInputStream(uri)?.use(BitmapFactory::decodeStream)?.asImageBitmap() }.getOrNull() }
+    }
+    Box(Modifier.fillMaxSize()) {
+        wallpaperBitmap?.let { Image(it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
     Scaffold(
+        containerColor = if (wallpaperBitmap != null) Color.Transparent else MaterialTheme.colorScheme.background,
         topBar = {
             ConnectionBar(
                 state = state,
                 hid = hid,
+                settingsOpen = settingsOpen,
+                onSettings = { settingsOpen = !settingsOpen },
                 requestBluetooth = { enableBluetooth.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) },
                 requestPairing = {
                     makeDiscoverable.launch(
@@ -95,28 +132,13 @@ private fun MobileKeybApp(hid: BluetoothHidManager) {
                     )
                 }
             )
-        },
-        bottomBar = {
-            if (!keyboardVisible) {
-                NavigationBar {
-                    Page.entries.forEach { item ->
-                        NavigationBarItem(
-                            selected = page == item,
-                            onClick = { page = item },
-                            icon = { Icon(if (item == Page.Control) Icons.Default.Mouse else Icons.Default.Settings, null) },
-                            label = { Text(item.name) }
-                        )
-                    }
-                }
-            }
         }
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
-            when (page) {
-                Page.Control -> ControlPanel(hid, sensitivity, naturalScroll)
-                Page.Settings -> SettingsPanel(sensitivity, { sensitivity = it }, naturalScroll, { naturalScroll = it })
-            }
+            if (settingsOpen) SettingsPanel(sensitivity, { sensitivity = it }, naturalScroll, { naturalScroll = it }, darkTheme, onDarkTheme, wallpaperUri != null, { wallpaperPicker.launch(arrayOf("image/*")) }, { onWallpaper(null) })
+            else ControlPanel(hid, sensitivity, naturalScroll, wallpaperBitmap)
         }
+    }
     }
 }
 
@@ -125,11 +147,20 @@ private fun MobileKeybApp(hid: BluetoothHidManager) {
 private fun ConnectionBar(
     state: HidState,
     hid: BluetoothHidManager,
+    settingsOpen: Boolean,
+    onSettings: () -> Unit,
     requestBluetooth: () -> Unit,
     requestPairing: () -> Unit
 ) {
     var menu by remember { mutableStateOf(false) }
-    TopAppBar(title = { Column { Text("Mobile Keyb"); Text(state.message, style = MaterialTheme.typography.labelSmall) } }, actions = {
+    TopAppBar(
+        navigationIcon = {
+            IconButton(onClick = onSettings) {
+                Icon(if (settingsOpen) Icons.AutoMirrored.Filled.ArrowBack else Icons.Default.Settings, if (settingsOpen) "Back" else "Settings")
+            }
+        },
+        title = { Column { Text(if (settingsOpen) "Settings" else "Mobile Keyb"); Text(state.message, style = MaterialTheme.typography.labelSmall) } },
+        actions = {
         if (state.message.startsWith("Bluetooth is off")) TextButton(onClick = requestBluetooth) { Text("Enable") }
         else if (state.connectedDevice != null) TextButton(onClick = hid::disconnect) { Text("Disconnect") }
         else if (state.registered) {
@@ -143,29 +174,36 @@ private fun ConnectionBar(
                 }
             }
         }
-    })
+        }
+    )
 }
 
 @Suppress("DEPRECATION") private fun BluetoothDevice.displayName() = name ?: address
 
 @Composable
-private fun ControlPanel(hid: BluetoothHidManager, sensitivity: Float, naturalScroll: Boolean) {
+private fun ControlPanel(hid: BluetoothHidManager, sensitivity: Float, naturalScroll: Boolean, wallpaper: ImageBitmap?) {
     var keyboardActive by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
-    Box(Modifier.fillMaxSize()) {
-        Touchpad(hid, sensitivity, naturalScroll, Modifier.fillMaxSize()) { keyboardActive = false }
+    val density = LocalDensity.current
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val buttonSizePx = with(density) { 56.dp.toPx() }
+        val maxButtonX = with(density) { maxWidth.toPx() } - buttonSizePx
+        val maxButtonY = with(density) { maxHeight.toPx() } - buttonSizePx
+        Touchpad(hid, sensitivity, naturalScroll, Modifier.fillMaxSize(), wallpaper) { keyboardActive = false }
         HiddenKeyboardInput(hid, focusRequester)
         if (keyboardActive) {
             ShortcutStrip(
                 hid,
                 Modifier
                     .align(Alignment.BottomCenter)
-                    .imePadding()
+                    .zIndex(10f)
             )
         }
         FloatingKeyboardButton(
-            modifier = Modifier.align(Alignment.BottomEnd),
+            modifier = Modifier.align(Alignment.TopStart),
+            maxX = maxButtonX.coerceAtLeast(0f),
+            maxY = maxButtonY.coerceAtLeast(0f),
             onClick = {
                 keyboardActive = true
                 focusRequester.requestFocus()
@@ -181,18 +219,31 @@ private fun Touchpad(
     sensitivity: Float,
     naturalScroll: Boolean,
     modifier: Modifier = Modifier,
+    wallpaper: ImageBitmap? = null,
     onTouch: () -> Unit = {}
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val touchSlop = LocalViewConfiguration.current.touchSlop
     Column(modifier.fillMaxWidth().padding(12.dp)) {
-        Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xFFE7E9F6), RoundedCornerShape(24.dp)).pointerInput(sensitivity, naturalScroll, touchSlop) {
+        val glassShape = RoundedCornerShape(24.dp)
+        Box(Modifier
+            .weight(1f)
+            .fillMaxWidth()
+            .clip(glassShape)
+            .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f), glassShape)
+            .pointerInput(sensitivity, naturalScroll, touchSlop) {
+            var lastTapTime = 0L
+            var lastTapPosition = Offset.Unspecified
             awaitEachGesture {
                 val down = awaitFirstDown()
                 focusManager.clearFocus()
                 keyboard?.hide()
                 onTouch()
+                var dragArmed = lastTapPosition != Offset.Unspecified &&
+                    down.uptimeMillis - lastTapTime <= 350L &&
+                    (down.position - lastTapPosition).getDistance() <= touchSlop * 4f
+                if (dragArmed) hid.mouse(buttons = 1)
                 var moved = false
                 var totalMovement = 0f
                 var maxPointers = 1
@@ -206,17 +257,57 @@ private fun Touchpad(
                         val centroid = active.map { it.position }.reduce(Offset::plus) / active.size.toFloat()
                         val delta = if (active.size == pointerCount) centroid - lastCentroid else Offset.Zero
                         if (active.size != pointerCount) pointerCount = active.size
+                        if (active.size > 1 && dragArmed) {
+                            hid.mouse()
+                            dragArmed = false
+                        }
                         totalMovement += delta.getDistance()
                         if (totalMovement > touchSlop) moved = true
-                        if (active.size == 1) hid.mouse(dx = delta.x * sensitivity, dy = delta.y * sensitivity)
+                        if (active.size == 1) hid.mouse(buttons = if (dragArmed) 1 else 0, dx = delta.x * sensitivity, dy = delta.y * sensitivity)
                         else if (active.size >= 2) hid.mouse(wheel = delta.y * (if (naturalScroll) -0.16f else 0.16f), horizontal = delta.x * 0.12f)
                         lastCentroid = centroid
                         event.changes.forEach { it.consume() }
                     }
                 } while (event.changes.any { it.pressed })
-                if (!moved) hid.click(if (maxPointers >= 2) 2 else 1)
+                if (dragArmed) hid.mouse()
+                when {
+                    maxPointers >= 2 && !moved -> {
+                        hid.click(2)
+                        lastTapTime = 0L
+                        lastTapPosition = Offset.Unspecified
+                    }
+                    dragArmed -> {
+                        lastTapTime = 0L
+                        lastTapPosition = Offset.Unspecified
+                    }
+                    !moved -> {
+                        hid.click(1)
+                        lastTapTime = down.uptimeMillis
+                        lastTapPosition = down.position
+                    }
+                    else -> {
+                        lastTapTime = 0L
+                        lastTapPosition = Offset.Unspecified
+                    }
+                }
             }
-        }, contentAlignment = Alignment.Center) { Text("TOUCHPAD", color = Color(0xFF74778A)) }
+        }, contentAlignment = Alignment.Center) {
+            wallpaper?.let {
+                Image(
+                    bitmap = it,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.matchParentSize().blur(20.dp)
+                )
+            }
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = if (wallpaper == null) 0.82f else 0.30f))
+                    .border(1.dp, Color.White.copy(alpha = 0.22f), glassShape)
+            )
+            Text("TOUCHPAD", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f))
+        }
     }
 }
 
@@ -237,37 +328,78 @@ private fun HiddenKeyboardInput(hid: BluetoothHidManager, focusRequester: FocusR
 }
 
 @Composable
-private fun FloatingKeyboardButton(modifier: Modifier = Modifier, onClick: () -> Unit) {
-    var x by remember { mutableFloatStateOf(-20f) }
-    var y by remember { mutableFloatStateOf(-20f) }
-    FloatingActionButton(
-        onClick = onClick,
+private fun FloatingKeyboardButton(
+    modifier: Modifier = Modifier,
+    maxX: Float,
+    maxY: Float,
+    onClick: () -> Unit
+) {
+    var x by remember { mutableFloatStateOf(maxX - 20f) }
+    var y by remember { mutableFloatStateOf(maxY - 20f) }
+    val touchSlop = LocalViewConfiguration.current.touchSlop
+    LaunchedEffect(maxX, maxY) {
+        x = x.coerceIn(0f, maxX)
+        y = y.coerceIn(0f, maxY)
+    }
+    Surface(
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.primaryContainer,
+        shadowElevation = 6.dp,
         modifier = modifier
             .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
-            .pointerInput(Unit) {
-                detectDragGesturesAfterLongPress { change, dragAmount ->
-                    change.consume()
-                    x = (x + dragAmount.x).coerceIn(-size.width * 8f, 0f)
-                    y = (y + dragAmount.y).coerceIn(-size.height * 20f, 0f)
+            .size(56.dp)
+            .pointerInput(maxX, maxY) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var lastPosition = down.position
+                    var travel = 0f
+                    var dragging = false
+                    do {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        val delta = change.position - lastPosition
+                        lastPosition = change.position
+                        travel += delta.getDistance()
+                        if (travel > touchSlop) dragging = true
+                        if (dragging) {
+                            x = (x + delta.x).coerceIn(0f, maxX)
+                            y = (y + delta.y).coerceIn(0f, maxY)
+                            change.consume()
+                        }
+                    } while (change.pressed)
+                    if (!dragging) onClick()
                 }
             }
-    ) { Icon(Icons.Default.Keyboard, contentDescription = "Open keyboard") }
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.Keyboard, contentDescription = "Open keyboard")
+        }
+    }
 }
 
 @Composable
 private fun ShortcutStrip(hid: BluetoothHidManager, modifier: Modifier = Modifier) {
-    Row(
-        modifier.padding(horizontal = 76.dp, vertical = 8.dp).horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        tonalElevation = 3.dp
     ) {
-        Shortcut("Win+Tab") { hid.shortcut(KeyboardMapper.META, 0x2B) }
-        Shortcut("Alt+Tab") { hid.shortcut(KeyboardMapper.ALT, 0x2B) }
-        Shortcut("Win+D") { hid.shortcut(KeyboardMapper.META, 0x07) }
-        Shortcut("Win+E") { hid.shortcut(KeyboardMapper.META, 0x08) }
-        Shortcut("Ctrl+C") { hid.shortcut(KeyboardMapper.CTRL, 0x06) }
-        Shortcut("Ctrl+V") { hid.shortcut(KeyboardMapper.CTRL, 0x19) }
-        Shortcut("Ctrl+Z") { hid.shortcut(KeyboardMapper.CTRL, 0x1D) }
-        Shortcut("Ctrl+A") { hid.shortcut(KeyboardMapper.CTRL, 0x04) }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Shortcut("Win+Tab") { hid.shortcut(KeyboardMapper.META, 0x2B) }
+            Shortcut("Alt+Tab") { hid.shortcut(KeyboardMapper.ALT, 0x2B) }
+            Shortcut("Win+D") { hid.shortcut(KeyboardMapper.META, 0x07) }
+            Shortcut("Win+E") { hid.shortcut(KeyboardMapper.META, 0x08) }
+            Shortcut("Ctrl+C") { hid.shortcut(KeyboardMapper.CTRL, 0x06) }
+            Shortcut("Ctrl+V") { hid.shortcut(KeyboardMapper.CTRL, 0x19) }
+            Shortcut("Ctrl+Z") { hid.shortcut(KeyboardMapper.CTRL, 0x1D) }
+            Shortcut("Ctrl+A") { hid.shortcut(KeyboardMapper.CTRL, 0x04) }
+        }
     }
 }
 
@@ -275,8 +407,24 @@ private fun ShortcutStrip(hid: BluetoothHidManager, modifier: Modifier = Modifie
 @Composable private fun Shortcut(text: String, action: () -> Unit) { AssistChip(onClick = action, label = { Text(text) }) }
 
 @Composable
-private fun SettingsPanel(sensitivity: Float, onSensitivity: (Float) -> Unit, natural: Boolean, onNatural: (Boolean) -> Unit) {
+private fun SettingsPanel(
+    sensitivity: Float, onSensitivity: (Float) -> Unit,
+    natural: Boolean, onNatural: (Boolean) -> Unit,
+    darkTheme: Boolean, onDarkTheme: (Boolean) -> Unit,
+    hasWallpaper: Boolean, chooseWallpaper: () -> Unit, clearWallpaper: () -> Unit
+) {
     Column(Modifier.padding(24.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Dark theme", Modifier.weight(1f))
+            Switch(darkTheme, onDarkTheme)
+        }
+        Spacer(Modifier.height(16.dp))
+        Text("Custom wallpaper", style = MaterialTheme.typography.titleMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = chooseWallpaper) { Text(if (hasWallpaper) "Change wallpaper" else "Choose wallpaper") }
+            if (hasWallpaper) OutlinedButton(onClick = clearWallpaper) { Text("Clear") }
+        }
+        Spacer(Modifier.height(24.dp))
         Text("Pointer sensitivity: ${"%.1f".format(sensitivity)}×", style = MaterialTheme.typography.titleMedium)
         Slider(sensitivity, onSensitivity, valueRange = 0.3f..2.5f)
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("Natural scrolling", Modifier.weight(1f)); Switch(natural, onNatural) }

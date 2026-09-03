@@ -2,6 +2,7 @@
 .gradle/
 .gradle-user/
 .android-user/
+.kotlin/
 local.properties
 .idea/
 build/
@@ -9,3 +10,15 @@ captures/
 .externalNativeBuild/
 .cxx/
 app/release/
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+key.properties
+keystore.properties
+signing.properties
+.env
+.env.*
+!.env.example
