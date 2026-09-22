@@ -23,6 +23,13 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
@@ -56,6 +63,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.dp
@@ -251,6 +259,16 @@ private fun MobileKeybApp(hid: BluetoothHidManager, darkTheme: Boolean, onDarkTh
         hid.start()
     }
     val makeDiscoverable = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
+    val launchPairing = {
+        hid.start()
+        makeDiscoverable.launch(
+            Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE)
+                .putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300)
+        )
+    }
+    val pairingPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) launchPairing()
+    }
     val wallpaperPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let {
             runCatching { context.contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
@@ -272,10 +290,10 @@ private fun MobileKeybApp(hid: BluetoothHidManager, darkTheme: Boolean, onDarkTh
                 onSettings = { settingsOpen = !settingsOpen },
                 requestBluetooth = { enableBluetooth.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) },
                 requestPairing = {
-                    makeDiscoverable.launch(
-                        Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE)
-                            .putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300)
-                    )
+                    if (Build.VERSION.SDK_INT >= 31 &&
+                        context.checkSelfPermission(Manifest.permission.BLUETOOTH_ADVERTISE) != PackageManager.PERMISSION_GRANTED) {
+                        pairingPermission.launch(Manifest.permission.BLUETOOTH_ADVERTISE)
+                    } else launchPairing()
                 }
             )
         }
@@ -316,15 +334,22 @@ private fun ConnectionBar(
         actions = {
         if (state.message.startsWith("Bluetooth is off")) TextButton(onClick = requestBluetooth) { Text("Enable") }
         else if (state.connectedDevice != null) TextButton(onClick = hid::disconnect) { Text("Disconnect") }
-        else if (state.registered) {
+        else {
             TextButton(onClick = requestPairing) { Text("Pair new") }
+            if (!state.registered) {
+                TextButton(onClick = hid::start) { Text("Retry") }
+            } else {
             Box {
                 TextButton(onClick = { menu = true }) { Text("Connect") }
                 DropdownMenu(menu, { menu = false }) {
+                    if (hid.pairedDevices().isEmpty()) {
+                        DropdownMenuItem(text = { Text("Pair a new computer") }, onClick = { menu = false; requestPairing() })
+                    }
                     hid.pairedDevices().forEach { device ->
                         DropdownMenuItem(text = { Text(device.displayName()) }, onClick = { menu = false; hid.connect(device) })
                     }
                 }
+            }
             }
         }
         }
@@ -591,6 +616,7 @@ private fun ShortcutStrip(hid: BluetoothHidManager, locked: Boolean, onLock: () 
                 KeyboardMapper.named.forEach { (label, key) -> Shortcut(label) { hid.key(key) } }
             }
             Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                WindowsKey(hid)
                 Shortcut("Win+Tab") { hid.shortcut(KeyboardMapper.META, 0x2B) }
                 Shortcut("Alt+Tab") { hid.shortcut(KeyboardMapper.ALT, 0x2B) }
                 Shortcut("Win+D") { hid.shortcut(KeyboardMapper.META, 0x07) }
@@ -605,6 +631,46 @@ private fun ShortcutStrip(hid: BluetoothHidManager, locked: Boolean, onLock: () 
         }
     }
     if (editing) ShortcutEditor(shortcuts, { shortcuts = it; CustomShortcut.save(prefs, it) }, { editing = false })
+}
+
+@Composable
+private fun WindowsKey(hid: BluetoothHidManager) {
+    var pressed by remember { mutableStateOf(false) }
+    DisposableEffect(hid) {
+        onDispose { hid.releaseModifier(KeyboardMapper.META) }
+    }
+    Box(
+        Modifier.size(48.dp)
+            .semantics {
+                contentDescription = "Windows key"
+                role = Role.Button
+                onClick { hid.shortcut(KeyboardMapper.META, 0); true }
+            }
+            .pointerInput(hid) {
+                detectTapGestures(onPress = {
+                    pressed = true
+                    hid.holdModifier(KeyboardMapper.META)
+                    try {
+                        tryAwaitRelease()
+                    } finally {
+                        pressed = false
+                        hid.releaseModifier(KeyboardMapper.META)
+                    }
+                })
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            modifier = Modifier.size(width = 48.dp, height = 32.dp),
+            shape = MaterialTheme.shapes.small,
+            color = if (pressed) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(painterResource(R.drawable.ic_windows), null, Modifier.size(18.dp))
+            }
+        }
+    }
 }
 
 @Composable private fun KeyButton(text: String, action: () -> Unit) { OutlinedButton(onClick = action, contentPadding = PaddingValues(0.dp), modifier = Modifier.padding(2.dp).defaultMinSize(minWidth = 34.dp, minHeight = 48.dp)) { Text(text, style = MaterialTheme.typography.labelMedium) } }

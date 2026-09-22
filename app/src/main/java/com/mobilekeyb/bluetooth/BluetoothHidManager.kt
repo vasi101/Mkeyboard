@@ -31,12 +31,14 @@ class BluetoothHidManager(context: Context) : BluetoothProfile.ServiceListener {
     private var closed = false
     private var requestingProxy = false
     private var registering = false
+    private var heldModifiers = 0
     private val retry = Runnable { maintainConnection() }
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)) {
                 BluetoothAdapter.STATE_ON -> start()
                 BluetoothAdapter.STATE_OFF -> {
+                    heldModifiers = 0
                     registering = false
                     mutableState.value = mutableState.value.copy(registered = false, connectedDevice = null, message = "Bluetooth is off - enable it to continue")
                 }
@@ -91,6 +93,7 @@ class BluetoothHidManager(context: Context) : BluetoothProfile.ServiceListener {
         override fun onAppStatusChanged(device: BluetoothDevice?, registered: Boolean) {
             if (closed) return
             registering = false
+            if (!registered) heldModifiers = 0
             mutableState.value = mutableState.value.copy(
                 connectedDevice = if (registered) mutableState.value.connectedDevice else null,
                 registered = registered,
@@ -105,6 +108,7 @@ class BluetoothHidManager(context: Context) : BluetoothProfile.ServiceListener {
         override fun onConnectionStateChanged(device: BluetoothDevice, newState: Int) {
             if (closed) return
             val connected = newState == BluetoothProfile.STATE_CONNECTED
+            if (!connected) heldModifiers = 0
             if (connected && !prefs.getBoolean("auto_connect", true)) {
                 hid?.disconnect(device)
                 return
@@ -162,10 +166,11 @@ class BluetoothHidManager(context: Context) : BluetoothProfile.ServiceListener {
         )
         val accepted = hid?.registerApp(settings, null, null, executor, callback) == true
         if (!accepted) registering = false
-        if (!accepted) mutableState.value = mutableState.value.copy(message = "Could not register HID profile")
+        if (!accepted) mutableState.value = mutableState.value.copy(message = "HID unavailable. Stop other keyboard apps (including release/debug), then retry.")
     }
 
     override fun onServiceDisconnected(profile: Int) {
+        heldModifiers = 0
         requestingProxy = false
         registering = false
         hid = null
@@ -181,6 +186,8 @@ class BluetoothHidManager(context: Context) : BluetoothProfile.ServiceListener {
         scheduleRetry()
     }
     fun disconnect() {
+        heldModifiers = 0
+        keyUp()
         val address = prefs.getString("host", null)
         prefs.edit().putBoolean("auto_connect", false).apply()
         val device = mutableState.value.connectedDevice ?: pairedDevices().firstOrNull { it.address == address }
@@ -192,11 +199,22 @@ class BluetoothHidManager(context: Context) : BluetoothProfile.ServiceListener {
         send(HidDescriptor.MOUSE_REPORT_ID, Reports.mouse(buttons, dx, dy, wheel, horizontal))
 
     fun click(button: Int) { mouse(buttons = button); mouse() }
-    fun key(key: HidKey) { send(HidDescriptor.KEYBOARD_REPORT_ID, Reports.keyboard(key.modifier, key.code)); keyUp() }
-    fun shortcut(modifier: Int, code: Int) { send(HidDescriptor.KEYBOARD_REPORT_ID, Reports.keyboard(modifier, code)); keyUp() }
-    private fun keyUp() { send(HidDescriptor.KEYBOARD_REPORT_ID, Reports.keyboard()) }
+    fun holdModifier(modifier: Int) {
+        heldModifiers = heldModifiers or modifier
+        keyUp()
+    }
+    fun releaseModifier(modifier: Int) {
+        if (heldModifiers and modifier == 0) return
+        heldModifiers = heldModifiers and modifier.inv()
+        keyUp()
+    }
+    fun key(key: HidKey) { shortcut(key.modifier, key.code) }
+    fun shortcut(modifier: Int, code: Int) { send(HidDescriptor.KEYBOARD_REPORT_ID, Reports.keyboard(heldModifiers or modifier, code)); keyUp() }
+    private fun keyUp() { send(HidDescriptor.KEYBOARD_REPORT_ID, Reports.keyboard(heldModifiers)) }
     private fun send(id: Int, report: ByteArray): Boolean = mutableState.value.connectedDevice?.let { hid?.sendReport(it, id, report) } == true
     fun close() {
+        heldModifiers = 0
+        keyUp()
         closed = true
         handler.removeCallbacksAndMessages(null)
         runCatching { appContext.unregisterReceiver(receiver) }
