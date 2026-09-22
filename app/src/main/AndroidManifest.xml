@@ -4,10 +4,16 @@
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <application
         android:allowBackup="true"
-        android:label="Mobile Keyb"
+        android:icon="@mipmap/ic_launcher"
+        android:label="${appLabel}"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/Theme.MobileKeyb">
+        <service android:name=".bluetooth.HidConnectionService" android:exported="false" android:foregroundServiceType="connectedDevice" android:stopWithTask="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

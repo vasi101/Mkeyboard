@@ -25,12 +25,18 @@ android {
         applicationId = "com.mobilekeyb"
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
+        manifestPlaceholders["appLabel"] = "Mobile Keyb"
     }
 
     buildFeatures { compose = true }
     buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+            manifestPlaceholders["appLabel"] = "Mobile Keyb Debug"
+        }
         getByName("release") {
             if (releaseKeystorePath != null) {
                 signingConfig = signingConfigs.getByName("release")
