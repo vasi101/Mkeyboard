@@ -79,6 +79,9 @@ jobs:
       contents: write
 
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
       - name: Download APK
         uses: actions/download-artifact@v4
         with:
@@ -89,4 +92,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "$GITHUB_REF_NAME" release/*.apk --generate-notes --title "Mobile Keyb $GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" release/*.apk --repo "$GH_REPO" --verify-tag --generate-notes --title "Mobile Keyb $GITHUB_REF_NAME"
